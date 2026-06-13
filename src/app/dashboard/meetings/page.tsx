@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 
 interface Meeting {
   id: string;
@@ -24,6 +25,8 @@ export default function MeetingsPage() {
   const [agentId, setAgentId] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
+  const [filter, setFilter] = useState<"all" | "upcoming" | "active" | "completed">("all");
+  const [search, setSearch] = useState("");
 
   const fetchData = async () => {
     const [meetingsRes, agentsRes] = await Promise.all([
@@ -68,43 +71,94 @@ export default function MeetingsPage() {
     completed: "bg-gray-100 text-gray-600",
   };
 
+  const statusIcon: Record<string, string> = {
+    upcoming: "🕐",
+    active: "🔴",
+    completed: "✅",
+  };
+
+  const filtered = meetings
+    .filter((m) => filter === "all" || m.status === filter)
+    .filter((m) => m.name.toLowerCase().includes(search.toLowerCase()));
+
   return (
     <div className="min-h-screen bg-gray-50 p-8">
-      <div className="max-w-4xl mx-auto">
+      <div className="max-w-5xl mx-auto">
+        {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-3xl font-bold">My Meetings</h1>
-            <p className="text-gray-500 mt-1">Schedule and manage your AI meetings</p>
+            <h1 className="text-2xl font-bold text-black">Meetings</h1>
+            <p className="text-gray-500 mt-1 text-sm">
+              Schedule and manage your AI meetings
+            </p>
           </div>
           <button
             onClick={() => setOpen(true)}
-            className="bg-black text-white px-4 py-2 rounded-lg hover:bg-gray-800"
+            className="bg-black text-white px-4 py-2 rounded-lg hover:bg-gray-800 text-sm font-medium"
           >
             + New Meeting
           </button>
         </div>
 
+        {/* Search + Filter */}
+        <div className="flex items-center gap-3 mb-6">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search meetings..."
+            className="flex-1 border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-black bg-white"
+          />
+          <div className="flex items-center gap-2">
+            {(["all", "upcoming", "active", "completed"] as const).map((f) => (
+              <button
+                key={f}
+                onClick={() => setFilter(f)}
+                className={`px-3 py-2 rounded-lg text-xs font-medium capitalize transition-colors ${
+                  filter === f
+                    ? "bg-black text-white"
+                    : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Create Modal */}
         {open && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
             <div className="bg-white rounded-xl p-6 w-full max-w-md shadow-xl">
-              <h2 className="text-xl font-bold mb-4">Create Meeting</h2>
+              <h2 className="text-xl font-bold mb-1">New Meeting</h2>
+              <p className="text-gray-500 text-sm mb-5">
+                Schedule a meeting with an AI agent
+              </p>
 
-              {error && <p className="text-red-500 text-sm mb-3">{error}</p>}
+              {error && (
+                <p className="text-red-500 text-sm mb-3 bg-red-50 px-3 py-2 rounded-lg">
+                  {error}
+                </p>
+              )}
 
-              <label className="block text-sm font-medium mb-1">Meeting Name</label>
+              <label className="block text-sm font-medium mb-1">
+                Meeting Name
+              </label>
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="e.g. Sales Call with John"
-                className="w-full border rounded-lg px-4 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-black"
+                className="w-full border rounded-lg px-4 py-2 mb-4 text-sm focus:outline-none focus:ring-2 focus:ring-black"
               />
 
-              <label className="block text-sm font-medium mb-1">Select Agent</label>
+              <label className="block text-sm font-medium mb-1">
+                Select Agent
+              </label>
               <select
                 value={agentId}
                 onChange={(e) => setAgentId(e.target.value)}
-                className="w-full border rounded-lg px-4 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-black"
+                className="w-full border rounded-lg px-4 py-2 mb-6 text-sm focus:outline-none focus:ring-2 focus:ring-black"
               >
                 <option value="">-- Choose an agent --</option>
                 {agents.map((agent) => (
@@ -117,14 +171,19 @@ export default function MeetingsPage() {
               <div className="flex gap-3">
                 <button
                   onClick={handleCreate}
-                  disabled={creating}
-                  className="flex-1 bg-black text-white py-2 rounded-lg hover:bg-gray-800 disabled:opacity-50"
+                  disabled={creating || !name || !agentId}
+                  className="flex-1 bg-black text-white py-2 rounded-lg hover:bg-gray-800 disabled:opacity-50 text-sm font-medium"
                 >
                   {creating ? "Creating..." : "Create Meeting"}
                 </button>
                 <button
-                  onClick={() => setOpen(false)}
-                  className="flex-1 border py-2 rounded-lg hover:bg-gray-50"
+                  onClick={() => {
+                    setOpen(false);
+                    setError("");
+                    setName("");
+                    setAgentId("");
+                  }}
+                  className="flex-1 border py-2 rounded-lg hover:bg-gray-50 text-sm"
                 >
                   Cancel
                 </button>
@@ -133,43 +192,77 @@ export default function MeetingsPage() {
           </div>
         )}
 
+        {/* Content */}
         {loading ? (
-          <p className="text-gray-400 text-center">Loading...</p>
-        ) : meetings.length === 0 ? (
-          <div className="bg-white rounded-xl shadow-sm border p-12 text-center">
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-12 text-center">
+            <p className="text-gray-400">Loading meetings...</p>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-12 text-center">
             <p className="text-4xl mb-4">📅</p>
-            <h2 className="text-xl font-semibold mb-2">No meetings yet</h2>
-            <p className="text-gray-500 mb-6">Schedule your first AI meeting</p>
-            <button
-              onClick={() => setOpen(true)}
-              className="bg-black text-white px-6 py-2 rounded-lg hover:bg-gray-800"
-            >
-              Create Meeting
-            </button>
+            <h2 className="text-lg font-semibold mb-2">
+              {search || filter !== "all" ? "No meetings found" : "No meetings yet"}
+            </h2>
+            <p className="text-gray-500 text-sm mb-6">
+              {search || filter !== "all"
+                ? "Try a different search or filter"
+                : "Schedule your first AI meeting"}
+            </p>
+            {!search && filter === "all" && (
+              <button
+                onClick={() => setOpen(true)}
+                className="bg-black text-white px-6 py-2 rounded-lg hover:bg-gray-800 text-sm"
+              >
+                Create Meeting
+              </button>
+            )}
           </div>
         ) : (
-          <div className="grid gap-4">
-            {meetings.map((meeting) => (
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm divide-y divide-gray-50">
+            {filtered.map((meeting) => (
               <div
                 key={meeting.id}
-                className="bg-white rounded-xl shadow-sm border p-6 flex items-center justify-between"
+                className="flex items-center justify-between p-5 hover:bg-gray-50 transition-colors"
               >
-                <div>
-                  <h2 className="text-lg font-semibold">{meeting.name}</h2>
-                  <p className="text-gray-400 text-sm mt-1">
-                    {new Date(meeting.createdAt).toLocaleDateString()}
-                  </p>
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-10 bg-gray-100 rounded-xl flex items-center justify-center text-lg">
+                    {statusIcon[meeting.status] || "📅"}
+                  </div>
+                  <div>
+                    <h2 className="font-semibold text-black text-sm">
+                      {meeting.name}
+                    </h2>
+                    <p className="text-gray-400 text-xs mt-0.5">
+                      {new Date(meeting.createdAt).toLocaleDateString("en-US", {
+                        weekday: "short",
+                        year: "numeric",
+                        month: "short",
+                        day: "numeric",
+                      })}
+                    </p>
+                  </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className={`text-xs px-3 py-1 rounded-full font-medium ${statusColor[meeting.status]}`}>
+                  <span
+                    className={`text-xs px-3 py-1 rounded-full font-medium ${statusColor[meeting.status]}`}
+                  >
                     {meeting.status}
                   </span>
-                  <a
-                    href={`/dashboard/meetings/${meeting.id}`}
-                    className="bg-black text-white px-4 py-2 rounded-lg text-sm hover:bg-gray-800"
-                  >
-                    Join
-                  </a>
+                  {meeting.status === "completed" ? (
+                    <Link
+                      href={`/dashboard/meetings/${meeting.id}/summary`}
+                      className="text-xs border border-gray-200 text-gray-700 px-3 py-1.5 rounded-lg hover:bg-gray-50 transition-colors"
+                    >
+                      View Summary
+                    </Link>
+                  ) : (
+                    <Link
+                      href={`/dashboard/meetings/${meeting.id}`}
+                      className="text-xs bg-black text-white px-3 py-1.5 rounded-lg hover:bg-gray-800 transition-colors"
+                    >
+                      Join →
+                    </Link>
+                  )}
                 </div>
               </div>
             ))}
