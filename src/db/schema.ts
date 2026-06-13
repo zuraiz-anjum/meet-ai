@@ -60,3 +60,22 @@ export const agents = pgTable("agents", {
   createdAt: timestamp("created_at").notNull(),
   updatedAt: timestamp("updated_at").notNull(),
 });
+
+
+export const meetings = pgTable("meetings", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  agentId: text("agent_id")
+    .notNull()
+    .references(() => agents.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("upcoming"),
+  startedAt: timestamp("started_at"),
+  endedAt: timestamp("ended_at"),
+  transcript: text("transcript"),
+  summary: text("summary"),
+  createdAt: timestamp("created_at").notNull(),
+  updatedAt: timestamp("updated_at").notNull(),
+});
