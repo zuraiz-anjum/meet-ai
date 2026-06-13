@@ -49,3 +49,14 @@ export const verifications = pgTable("verifications", {
   createdAt: timestamp("created_at"),
   updatedAt: timestamp("updated_at"),
 });
+
+export const agents = pgTable("agents", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  instructions: text("instructions").notNull(),
+  createdAt: timestamp("created_at").notNull(),
+  updatedAt: timestamp("updated_at").notNull(),
+});
