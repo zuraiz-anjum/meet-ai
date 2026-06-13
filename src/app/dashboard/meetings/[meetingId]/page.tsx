@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useEffect, useState, useRef } from "react";
+import { useParams, useRouter } from "next/navigation";
 import {
   StreamVideo,
   StreamVideoClient,
@@ -19,32 +19,220 @@ interface Message {
 
 export default function MeetingRoomPage() {
   const { meetingId } = useParams();
+  const router = useRouter();
   const [client, setClient] = useState<StreamVideoClient | null>(null);
   const [call, setCall] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
   const [agentName, setAgentName] = useState("");
   const [agentInstructions, setAgentInstructions] = useState("");
-  const [chatLoading, setChatLoading] = useState(false);
+  const [status, setStatus] = useState<"idle" | "listening" | "thinking" | "speaking">("idle");
+  const [transcript, setTranscript] = useState("");
+  const [ending, setEnding] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const recognitionRef = useRef<any>(null);
+  const isSpeakingRef = useRef(false);
+  const messagesRef = useRef<Message[]>([]);
+  const agentInstructionsRef = useRef("");
+  const callRef = useRef<any>(null);
+  const clientRef = useRef<any>(null);
+  const endingRef = useRef(false);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    agentInstructionsRef.current = agentInstructions;
+  }, [agentInstructions]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, transcript]);
+
+  const speak = (text: string, onDone?: () => void) => {
+    if (!window.speechSynthesis || endingRef.current) {
+      onDone?.();
+      return;
+    }
+    window.speechSynthesis.cancel();
+    isSpeakingRef.current = true;
+    setStatus("speaking");
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    utterance.onend = () => {
+      isSpeakingRef.current = false;
+      if (!endingRef.current) onDone?.();
+    };
+    utterance.onerror = () => {
+      isSpeakingRef.current = false;
+      if (!endingRef.current) onDone?.();
+    };
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const startListening = () => {
+    if (endingRef.current) return;
+
+    const SpeechRecognition =
+      (window as any).SpeechRecognition ||
+      (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) return;
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = "en-US";
+    recognition.interimResults = true;
+    recognition.continuous = false;
+
+    recognition.onstart = () => {
+      setStatus("listening");
+      setTranscript("");
+    };
+
+    recognition.onresult = (event: any) => {
+      let interim = "";
+      let final = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const t = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          final += t;
+        } else {
+          interim += t;
+        }
+      }
+      setTranscript(final || interim);
+    };
+
+    recognition.onend = () => {
+      if (endingRef.current) return;
+      const current = recognitionRef.current;
+      if (!current) return;
+      const finalText = current._lastTranscript;
+      if (finalText && finalText.trim().length > 0) {
+        handleUserMessage(finalText.trim());
+      } else {
+        startListening();
+      }
+    };
+
+    recognition.onerror = (e: any) => {
+      if (endingRef.current) return;
+      if (e.error === "no-speech") {
+        startListening();
+      }
+    };
+
+    const originalOnResult = recognition.onresult;
+    recognition.onresult = (event: any) => {
+      originalOnResult(event);
+      let final = "";
+      for (let i = 0; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          final += event.results[i][0].transcript;
+        }
+      }
+      recognition._lastTranscript = final;
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+  };
+
+  const handleUserMessage = async (text: string) => {
+    if (endingRef.current) return;
+
+    setTranscript("");
+    setStatus("thinking");
+
+    const userMsg: Message = { role: "user", text };
+    const updatedMessages = [...messagesRef.current, userMsg];
+    setMessages(updatedMessages);
+    messagesRef.current = updatedMessages;
+
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: text,
+          instructions: agentInstructionsRef.current,
+          history: messagesRef.current,
+        }),
+      });
+      const data = await res.json();
+      const reply = data.reply;
+
+      if (endingRef.current) return;
+
+      const agentMsg: Message = { role: "agent", text: reply };
+      const finalMessages = [...messagesRef.current, agentMsg];
+      setMessages(finalMessages);
+      messagesRef.current = finalMessages;
+
+      speak(reply, () => {
+        startListening();
+      });
+    } catch {
+      if (endingRef.current) return;
+      const errMsg = "Sorry, I couldn't process that.";
+      setMessages((prev) => [...prev, { role: "agent", text: errMsg }]);
+      speak(errMsg, () => startListening());
+    }
+  };
+
+  const endMeeting = async () => {
+    // Set ending flag immediately to stop all ongoing processes
+    endingRef.current = true;
+    setEnding(true);
+
+    // Stop everything immediately
+    recognitionRef.current?.stop();
+    recognitionRef.current = null;
+    window.speechSynthesis?.cancel();
+    isSpeakingRef.current = false;
+    setStatus("idle");
+
+    const transcriptText = messagesRef.current
+      .map((m) => `${m.role === "user" ? "User" : "Agent"}: ${m.text}`)
+      .join("\n");
+
+    try {
+      const res = await fetch(`/api/meetings/${meetingId}/summary`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript: transcriptText }),
+      });
+      const data = await res.json();
+      localStorage.setItem(`summary-${meetingId}`, data.summary);
+    } catch {
+      localStorage.setItem(
+        `summary-${meetingId}`,
+        "Summary could not be generated."
+      );
+    }
+
+    callRef.current?.leave();
+    clientRef.current?.disconnectUser();
+    router.push(`/dashboard/meetings/${meetingId}/summary`);
+  };
 
   useEffect(() => {
     const init = async () => {
       try {
-        // Get stream token for user
         const tokenRes = await fetch("/api/stream-token");
         const { token, userId, userName } = await tokenRes.json();
 
-        // Join meeting and get agent info
         const joinRes = await fetch(`/api/meetings/${meetingId}/join`, {
           method: "POST",
         });
         const agentData = await joinRes.json();
         setAgentName(agentData.agentName);
         setAgentInstructions(agentData.agentInstructions);
+        agentInstructionsRef.current = agentData.agentInstructions;
 
-        // Set up Stream video
         const streamClient = new StreamVideoClient({
           apiKey: process.env.NEXT_PUBLIC_STREAM_VIDEO_API_KEY!,
           user: { id: userId, name: userName },
@@ -56,16 +244,19 @@ export default function MeetingRoomPage() {
 
         setClient(streamClient);
         setCall(streamCall);
+        callRef.current = streamCall;
+        clientRef.current = streamClient;
 
-        // Add welcome message from agent
-        setMessages([
-          {
-            role: "agent",
-            text: `Hi! I'm ${agentData.agentName}. How can I help you today?`,
-          },
-        ]);
+        const welcome = `Hi! I'm ${agentData.agentName}. How can I help you today?`;
+        const welcomeMsg: Message = { role: "agent", text: welcome };
+        setMessages([welcomeMsg]);
+        messagesRef.current = [welcomeMsg];
 
         setLoading(false);
+
+        speak(welcome, () => {
+          startListening();
+        });
       } catch (err) {
         setError("Failed to join meeting");
         setLoading(false);
@@ -75,44 +266,19 @@ export default function MeetingRoomPage() {
     init();
 
     return () => {
-      call?.leave();
-      client?.disconnectUser();
+      endingRef.current = true;
+      recognitionRef.current?.stop();
+      recognitionRef.current = null;
+      window.speechSynthesis?.cancel();
+      callRef.current?.leave();
+      clientRef.current?.disconnectUser();
     };
   }, [meetingId]);
-
-  const sendMessage = async () => {
-    if (!input.trim()) return;
-    const userMessage = input.trim();
-    setInput("");
-    setMessages((prev) => [...prev, { role: "user", text: userMessage }]);
-    setChatLoading(true);
-
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: userMessage,
-          instructions: agentInstructions,
-          history: messages,
-        }),
-      });
-      const data = await res.json();
-      setMessages((prev) => [...prev, { role: "agent", text: data.reply }]);
-    } catch {
-      setMessages((prev) => [
-        ...prev,
-        { role: "agent", text: "Sorry, I couldn't process that." },
-      ]);
-    } finally {
-      setChatLoading(false);
-    }
-  };
 
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-black">
-        <p className="text-white">Joining meeting...</p>
+        <p className="text-white text-lg">Joining meeting...</p>
       </div>
     );
   }
@@ -124,6 +290,13 @@ export default function MeetingRoomPage() {
       </div>
     );
   }
+
+  const statusLabel = {
+    idle: "...",
+    listening: "🎙️ Listening...",
+    thinking: "🤔 Thinking...",
+    speaking: "🔊 Speaking...",
+  }[status];
 
   return (
     <div className="min-h-screen bg-black flex">
@@ -145,14 +318,28 @@ export default function MeetingRoomPage() {
       <div className="w-80 bg-gray-900 flex flex-col">
         <div className="p-4 border-b border-gray-700">
           <h2 className="text-white font-semibold">🤖 {agentName}</h2>
-          <p className="text-gray-400 text-xs mt-1">AI Assistant</p>
+          <p
+            className={`text-xs mt-1 font-medium ${
+              status === "listening"
+                ? "text-green-400"
+                : status === "thinking"
+                ? "text-yellow-400"
+                : status === "speaking"
+                ? "text-blue-400"
+                : "text-gray-400"
+            }`}
+          >
+            {statusLabel}
+          </p>
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           {messages.map((msg, i) => (
             <div
               key={i}
-              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+              className={`flex ${
+                msg.role === "user" ? "justify-end" : "justify-start"
+              }`}
             >
               <div
                 className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${
@@ -165,29 +352,39 @@ export default function MeetingRoomPage() {
               </div>
             </div>
           ))}
-          {chatLoading && (
-            <div className="flex justify-start">
-              <div className="bg-gray-700 text-white rounded-lg px-3 py-2 text-sm">
-                Thinking...
+
+          {transcript && (
+            <div className="flex justify-end">
+              <div className="max-w-[80%] rounded-lg px-3 py-2 text-sm bg-white/20 text-white/70 italic">
+                {transcript}
               </div>
             </div>
           )}
+
+          <div ref={messagesEndRef} />
         </div>
 
-        <div className="p-4 border-t border-gray-700 flex gap-2">
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-            placeholder="Ask the agent..."
-            className="flex-1 bg-gray-800 text-white rounded-lg px-3 py-2 text-sm focus:outline-none"
-          />
-          <button
-            onClick={sendMessage}
-            className="bg-white text-black px-3 py-2 rounded-lg text-sm hover:bg-gray-200"
+        {/* Status bar + End Meeting at bottom */}
+        <div className="p-4 border-t border-gray-700 space-y-2">
+          <div
+            className={`w-full py-3 rounded-lg text-sm font-medium text-center ${
+              status === "listening"
+                ? "bg-green-600 text-white animate-pulse"
+                : status === "thinking"
+                ? "bg-yellow-600 text-white"
+                : status === "speaking"
+                ? "bg-blue-600 text-white"
+                : "bg-gray-700 text-gray-400"
+            }`}
           >
-            Send
+            {statusLabel}
+          </div>
+          <button
+            onClick={endMeeting}
+            disabled={ending}
+            className="w-full py-2 rounded-lg text-sm font-medium bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+          >
+            {ending ? "Ending..." : "End Meeting"}
           </button>
         </div>
       </div>
